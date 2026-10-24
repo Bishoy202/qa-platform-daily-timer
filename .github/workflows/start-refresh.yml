@@ -1,0 +1,37 @@
+# Starts the daily job refresh of the private repo Bishoy202/Junior-QA-Platform.
+# GitHub never fired the schedule inside that repo (private, free plan: 0 schedule runs 2026-10-22..24), while a public
+# repo's schedule does fire. Needs the repository secret QA_PLATFORM_DISPATCH_TOKEN: a fine-grained token limited to
+# Junior-QA-Platform with "Actions: Read and write".
+name: Start the daily job refresh
+on:
+  schedule:
+    - cron: "23 2 * * *"   # 05:23 Cairo summer time (04:23 in winter)
+    - cron: "23 5 * * *"   # backup, in case GitHub dropped the first one
+  workflow_dispatch:
+permissions:
+  actions: write   # only for the keep-alive step, on this repo
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start daily-refresh.yml in Junior-QA-Platform (once a day)
+        env:
+          TOKEN: ${{ secrets.QA_PLATFORM_DISPATCH_TOKEN }}
+          API: https://api.github.com/repos/Bishoy202/Junior-QA-Platform/actions/workflows/daily-refresh.yml
+        run: |
+          test -n "$TOKEN" || { echo "::error::the secret QA_PLATFORM_DISPATCH_TOKEN is missing"; exit 1; }
+          today=$(date -u +%F)
+          # the backup run (or a second click) starts nothing when a refresh already ran or is running today
+          done_today=$(curl -fsS -H "Authorization: Bearer $TOKEN" "$API/runs?per_page=10" | jq --arg d "$today" \
+            '[.workflow_runs[] | select(.created_at | startswith($d)) | select(.status != "completed" or .conclusion == "success")] | length')
+          if [ "$done_today" -gt 0 ]; then echo "a refresh already ran or is running today - nothing to start"; exit 0; fi
+          curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "$API/dispatches" -d '{"ref":"main"}'
+          echo "daily refresh started"
+      - name: Keep this schedule alive
+        # GitHub turns a public repo's schedules off after 60 days with no activity in it.
+        # shortcut: assumes re-enabling the workflow counts as activity (keepalive actions rely on it); if the schedule
+        # still stops after 60 days, push an empty commit here once a month instead
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/start-refresh.yml/enable"
